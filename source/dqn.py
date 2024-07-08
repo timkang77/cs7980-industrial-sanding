@@ -5,7 +5,7 @@ import numpy as np
 import ray
 
 # Import your custom environment
-from new_grid_env import GridWorldEnv
+from env import GridWorldEnv
 
 # Define a sample grid for initialization
 new_grid = np.array([[3.178, 2.347, 9.928, 3.101, 3.328],
