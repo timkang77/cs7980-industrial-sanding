@@ -17,7 +17,7 @@ class GridWorldEnv(gym.Env):
 
         self.observation_space = spaces.Dict({
             "agent": spaces.Box(0, size - 1, shape=(2,), dtype=int),
-            "grid": spaces.Box(low=-100, high=10, shape=(size, size), dtype=float) 
+            "grid": spaces.Box(low=-100, high=100, shape=(size, size), dtype=float) 
             })
         self.grid = grid
         self.step_counter = 0
@@ -59,7 +59,7 @@ class GridWorldEnv(gym.Env):
     def reset(self, seed=None, options=None):
 
         # Choose the agent's location as (0,0)
-        self._agent_location = np.array([0,4])
+        self._agent_location = np.array([0,self.size-1])
         self.grid = self.initial_grid.copy()
         self.step_counter = 0
         self.direction = None
