@@ -4,12 +4,29 @@ import pygame
 import gymnasium as gym
 from gymnasium import spaces
 
+def population_variance(midvalue_space,frequency_space):
+
+    # Calculate the total number of observations (N)
+    N = np.sum(frequency_space)
+
+    # Calculate the weighted mean of midvalues
+    weighted_mean = np.sum(frequency_space * midvalue_space) / N
+
+    # Calculate the variance using the given formula
+    term1 = np.sum(frequency_space * (midvalue_space ** 2))
+    term2 = (np.sum(frequency_space * midvalue_space) ** 2) / N
+
+    variance = (1 / N) * (term1 - term2)
+    return variance
 
 class GridWorldEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
 
-    def __init__(self, grid, render_mode=None, size=50, sander_size = 1, sander_shape = "rectangular", range = 0, power = 0.5):
-        self.size = size  # The size of the square grid
+    
+
+    def __init__(self, grid, render_mode=None, lsize=50, wsize = 50, sander_size = 1, sander_shape = "rectangular", range = 0, power = 0.5):
+        self.lsize = lsize
+        self.wsize= wsize 
         self.window_size = 512  # The size of the PyGame window
 
         self.range = range
@@ -18,14 +35,27 @@ class GridWorldEnv(gym.Env):
 
         #self.observation_space = spaces.Box(0, size - 1, shape=(2,), dtype=int)
         self.observation_space = spaces.Dict({
-            "agent": spaces.Box(0, size - 1, shape=(2,), dtype=int),
-            "grid": spaces.Box(low=-100, high=10, shape=(size, size), dtype=float) 
+            "agent": spaces.Box(low=np.array([0, 0]), high=np.array([lsize - 1, wsize - 1]), dtype=int),
+            "midvalue_space": spaces.Box(low=0, high=10, shape=(lsize, wsize), dtype=float),
+            "frequency_space" : spaces.Box(low=0, high=1000, shape=(), dtype=int),
+            "min_value_space" : spaces.Box(low=0, high=10, shape=(), dtype=float)
             })
-        self.grid = grid
+        
+        # suppose each entry from the grid is of form (midvalue, frequency, min_value)
+        midvalue_space = np.zeros((lsize, wsize), dtype=float)
+        frequency_space = np.zeros((lsize, wsize), dtype=float)
+        min_value_space = np.zeros((lsize, wsize), dtype=float)
+
+        for i in range(lsize):
+            for j in range(wsize):
+                midvalue_space[i, j] = grid[i, j][0]
+                frequency_space[i, j] = grid[i, j][1]
+                min_value_space[i, j] = grid[i, j][2]
+
         self.step_counter = 0
         self.direction = None
         self.initial_grid = grid # for the reset() function
-        self.prev_var = np.var(grid)
+        self.prev_var = population_variance(self.midvalue_space,self.frequency_space)
         self.threshold = self.prev_var/2
 
         # We have 5 actions, corresponding to "right", "up", "left", "down", "hold"
@@ -62,13 +92,13 @@ class GridWorldEnv(gym.Env):
 
 
     def _get_obs(self):
-        return {"agent": self._agent_location, "grid": self.grid}
+        return {"agent": self._agent_location, "midvalue_space": self.midvalue_space, "frequency_space" :self.frequency_space,"min_value_space": self.min_value_space }
 
 
 
     def _get_info(self):
         return {
-            "variance": np.var(self.grid),
+            "prev_variance": self.prev_var,
             "step": self.step_counter}
 
 
@@ -76,7 +106,7 @@ class GridWorldEnv(gym.Env):
         # No randomness needed
 
         # Choose the agent's location as (0,0)
-        self._agent_location = np.array([0,4])
+        self._agent_location = np.array([0,0])
         self.grid = self.initial_grid.copy()
         self.step_counter = 0
         self.direction = None
@@ -94,9 +124,9 @@ class GridWorldEnv(gym.Env):
 # 2. change of variances of the grid
 # 3. step taken
     def reward(self, direction_change,curr_var):
-      coeff = 100
-      if np.any(self.grid < 0):
-        return -10000
+      coeff = 10000
+      if np.any(self.min_value_space < 0):
+        return -1000
       if direction_change:
         return -5 + coeff * (self.prev_var-curr_var) - 1
       else:
@@ -112,10 +142,8 @@ class GridWorldEnv(gym.Env):
             if abs(i) + abs(j) <= self.range and (self._agent_location[0] + j <= self.size -1)\
               and (self._agent_location[0] + j >= 0) and (self._agent_location[1] + i <= self.size -1)\
               and (self._agent_location[1] + i >= 0):
-              self.grid[self._agent_location[1] + j, self._agent_location[0] + i] -= self.power
-              #print(i, j)
-              #print(self._agent_location[0] + j, self._agent_location[1] + i)
-              #print(self.grid[self._agent_location[1] + j, self._agent_location[0] + i])
+              self.min_value_space[self._agent_location[1] + j, self._agent_location[0] + i] -= self.power
+              self.midvalue_space[self._agent_location[1] + j, self._agent_location[0] + i] -= self.power
 
         return
 
@@ -125,8 +153,8 @@ class GridWorldEnv(gym.Env):
         direction = self._action_to_direction[action]
         # We use `np.clip` to make sure we don't leave the grid
         self._agent_location = np.clip(
-            self._agent_location + direction, 0, self.size - 1
-        )
+            self._agent_location + direction,  [0, 0], [self.lsize - 1, self.wsize - 1])
+        
         direction_change = False
         if action!= self.direction and self.step_counter != 0 and (action != 4 and self.direction != 4):
           direction_change = True
@@ -134,8 +162,8 @@ class GridWorldEnv(gym.Env):
           self.direction = action
         self.step_counter += 1
 
-        curr_var = np.var(self.grid)
-        #TBD
+        curr_var =  population_variance(self.midvalue_space,self.frequency_space)
+      
         self.update_grid()
 
         reward = self.reward(direction_change,curr_var)
