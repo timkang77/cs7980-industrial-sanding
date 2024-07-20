@@ -4,59 +4,50 @@ import pygame
 import gymnasium as gym
 from gymnasium import spaces
 
-def population_variance(midvalue_space,frequency_space):
+def calculate_diff_variance(location,power,prev_mean,curr_mean, mean_space,frequency_space):
+   return 2*frequency_space[location[0],location[1]]*power*mean_space[location[0],location[1]] + (prev_mean^2 - curr_mean^2)
 
-    # Calculate the total number of observations (N)
+def calculate_mean(mean_space,frequency_space):
     N = np.sum(frequency_space)
-
-    # Calculate the weighted mean of midvalues
-    weighted_mean = np.sum(frequency_space * midvalue_space) / N
-
-    # Calculate the variance using the given formula
-    term1 = np.sum(frequency_space * (midvalue_space ** 2))
-    term2 = (np.sum(frequency_space * midvalue_space) ** 2) / N
-
-    variance = (1 / N) * (term1 - term2)
-    return variance
+    return  np.sum(frequency_space * mean_space) / N
 
 class GridWorldEnv(gym.Env):
-    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
 
-    
-
-    def __init__(self, grid, render_mode=None, lsize=50, wsize = 50, sander_size = 1, sander_shape = "rectangular", range = 0, power = 0.5):
+    def __init__(self, grid,initial_var_sqr, lsize=50, wsize = 50, power = 0.5):
         self.lsize = lsize
         self.wsize= wsize 
-        self.window_size = 512  # The size of the PyGame window
-
-        self.range = range
+        self.initial_var_sqr = initial_var_sqr
         self.power = power
 
 
         #self.observation_space = spaces.Box(0, size - 1, shape=(2,), dtype=int)
         self.observation_space = spaces.Dict({
             "agent": spaces.Box(low=np.array([0, 0]), high=np.array([lsize - 1, wsize - 1]), dtype=int),
-            "midvalue_space": spaces.Box(low=0, high=10, shape=(lsize, wsize), dtype=float),
+            "mean_space": spaces.Box(low=0, high=10, shape=(lsize, wsize), dtype=float),
             "frequency_space" : spaces.Box(low=0, high=1000, shape=(), dtype=int),
             "min_value_space" : spaces.Box(low=0, high=10, shape=(), dtype=float)
             })
         
         # suppose each entry from the grid is of form (midvalue, frequency, min_value)
-        midvalue_space = np.zeros((lsize, wsize), dtype=float)
-        frequency_space = np.zeros((lsize, wsize), dtype=float)
-        min_value_space = np.zeros((lsize, wsize), dtype=float)
+        self.mean_space = np.zeros((lsize, wsize), dtype=float)
+        self.frequency_space = np.zeros((lsize, wsize), dtype=float)
+        self.min_value_space = np.zeros((lsize, wsize), dtype=float)
 
         for i in range(lsize):
             for j in range(wsize):
-                midvalue_space[i, j] = grid[i, j][0]
-                frequency_space[i, j] = grid[i, j][1]
-                min_value_space[i, j] = grid[i, j][2]
+                self.mean_space[i, j] = grid[i, j][0]
+                self.frequency_space[i, j] = grid[i, j][1]
+                self.min_value_space[i, j] = grid[i, j][2]
 
         self.step_counter = 0
         self.direction = None
         self.initial_grid = grid # for the reset() function
-        self.prev_var = population_variance(self.midvalue_space,self.frequency_space)
-        self.threshold = self.prev_var/2
+
+        self.prev_mean = calculate_mean(self.mean_space,self.frequency_space)
+        self.curr_mean = self.prev_mean
+
+        self.curr_var_sqr = self.initial_var_sqr
+        self.threshold = initial_var_sqr/4
 
         # We have 5 actions, corresponding to "right", "up", "left", "down", "hold"
         self.action_space = spaces.Discrete(5)
@@ -74,25 +65,8 @@ class GridWorldEnv(gym.Env):
             4: np.array([0, 0]),
         }
 
-        #self.reward = 0
-
-        assert render_mode is None or render_mode in self.metadata["render_modes"]
-        self.render_mode = render_mode
-        #self.render_mode = "human"
-
-        """
-        If human-rendering is used, `self.window` will be a reference
-        to the window that we draw to. `self.clock` will be a clock that is used
-        to ensure that the environment is rendered at the correct framerate in
-        human-mode. They will remain `None` until human-mode is used for the
-        first time.
-        """
-        self.window = None
-        self.clock = None
-
-
     def _get_obs(self):
-        return {"agent": self._agent_location, "midvalue_space": self.midvalue_space, "frequency_space" :self.frequency_space,"min_value_space": self.min_value_space }
+        return {"agent": self._agent_location, "mean_space": self.mean_space, "frequency_space" :self.frequency_space,"min_value_space": self.min_value_space }
 
 
 
@@ -113,8 +87,6 @@ class GridWorldEnv(gym.Env):
         observation = self._get_obs()
         info = self._get_info()
 
-        if self.render_mode == "human":
-            self._render_frame()
 
         return observation, info
 
@@ -123,27 +95,23 @@ class GridWorldEnv(gym.Env):
 # 1. change of directions : penalty = 5
 # 2. change of variances of the grid
 # 3. step taken
-    def reward(self, direction_change,curr_var):
+    def reward(self, direction_change,diff_var):
       coeff = 10000
       if np.any(self.min_value_space < 0):
         return -1000
       if direction_change:
-        return -5 + coeff * (self.prev_var-curr_var) - 1
+        return -5 + coeff *(-diff_var) - 1
       else:
-        return coeff * (self.prev_var-curr_var) - 1
+        return coeff *(-diff_var) - 1
 
 
 # Step
 
     def update_grid(self):
         # for circle sander
-        for i in range(-self.range, self.range+1):
-          for j in range(-self.range, self.range+1):
-            if abs(i) + abs(j) <= self.range and (self._agent_location[0] + j <= self.size -1)\
-              and (self._agent_location[0] + j >= 0) and (self._agent_location[1] + i <= self.size -1)\
-              and (self._agent_location[1] + i >= 0):
-              self.min_value_space[self._agent_location[1] + j, self._agent_location[0] + i] -= self.power
-              self.midvalue_space[self._agent_location[1] + j, self._agent_location[0] + i] -= self.power
+     
+        self.min_value_space[self._agent_location[1], self._agent_location[0]] -= self.power
+        self.mean_space[self._agent_location[1], self._agent_location[0]] -= self.power
 
         return
 
@@ -162,17 +130,17 @@ class GridWorldEnv(gym.Env):
           self.direction = action
         self.step_counter += 1
 
-        curr_var =  population_variance(self.midvalue_space,self.frequency_space)
-      
+        self.prev_mean = self.curr_mean
         self.update_grid()
+        self.curr_mean = calculate_mean(self.mean_space,self.frequency_space)
+        diff_var =  calculate_diff_variance(self._agent_location,self.power,self.prev_mean,self.curr_mean,self.mean_space,self.frequency_space)
+        self.curr_var_sqr += diff_var
+        reward = self.reward(self._agent_location,direction_change,diff_var)
 
-        reward = self.reward(direction_change,curr_var)
-
-        #self.reward += reward
-        self.prev_var = curr_var
+    
 
         # An episode is done iff the agent has reached the target
-        terminated = (curr_var <= self.threshold)
+        terminated = (self.curr_var_sqr <= self.threshold)
 
         truncated = False
 
@@ -183,89 +151,14 @@ class GridWorldEnv(gym.Env):
         observation = self._get_obs()
         info = self._get_info()
 
-        if self.render_mode == "human":
-            self._render_frame()
 
         return observation, reward, terminated, truncated, info
 
-# %%
-# Rendering
-# ~~~~~~~~~
 
     def render(self):
-        if self.render_mode == "rgb_array":
-            return self._render_frame()
+        return None
 
-    def _render_frame(self):
-        if self.window is None and self.render_mode == "human":
-            pygame.init()
-            pygame.display.init()
-            self.window = pygame.display.set_mode(
-                (self.window_size, self.window_size)
-            )
-        if self.clock is None and self.render_mode == "human":
-            self.clock = pygame.time.Clock()
-
-        canvas = pygame.Surface((self.window_size, self.window_size))
-        canvas.fill((255, 255, 255))
-        pix_square_size = (
-            self.window_size / self.size
-        )  
-
-
-        # draw the agent
-        pygame.draw.circle(
-            canvas,
-            (0, 0, 255),
-            (self._agent_location + 0.5) * pix_square_size,
-            pix_square_size / 3,
-        )
-
-        # draw the grid values
-        font = pygame.font.SysFont(None, 24)
-        for i in range(self.size):
-            for j in range(self.size):
-                value = self.grid[i, j]
-                text = font.render(f'{value:.2f}', True, (0, 0, 0))
-                text_rect = text.get_rect(center=((j + 0.5) * pix_square_size, (i + 0.5) * pix_square_size))
-                canvas.blit(text, text_rect)
-
-        # Finally, add some gridlines
-        for x in range(self.size + 1):
-            pygame.draw.line(
-                canvas,
-                0,
-                (0, pix_square_size * x),
-                (self.window_size, pix_square_size * x),
-                width=3,
-            )
-            pygame.draw.line(
-                canvas,
-                0,
-                (pix_square_size * x, 0),
-                (pix_square_size * x, self.window_size),
-                width=3,
-            )
-
-        if self.render_mode == "human":
-            # The following line copies our drawings from `canvas` to the visible window
-            self.window.blit(canvas, canvas.get_rect())
-            pygame.event.pump()
-            pygame.display.update()
-
-            # We need to ensure that human-rendering occurs at the predefined framerate.
-            # The following line will automatically add a delay to keep the framerate stable.
-            self.clock.tick(self.metadata["render_fps"])
-        else:  # rgb_array
-            return np.transpose(
-                np.array(pygame.surfarray.pixels3d(canvas)), axes=(1, 0, 2)
-            )
-
-# %%
-# Close
-# ~~~~~
+    
 
     def close(self):
-        if self.window is not None:
-            pygame.display.quit()
-            pygame.quit()
+        return None
