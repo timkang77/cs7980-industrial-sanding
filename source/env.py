@@ -8,7 +8,7 @@ from gymnasium import spaces
 class GridWorldEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
 
-    def __init__(self, grid, render_mode=None, sander_shape = "rectangular", range = 0, power = 0.3):
+    def __init__(self, grid, render_mode=None, sander_shape = "rectangular", range = 0, power = 0.06):
         self.length, self.width = grid.shape
         
         self.window_size = 512
@@ -24,8 +24,8 @@ class GridWorldEnv(gym.Env):
         self.step_counter = 0
         self.direction = None
         self.initial_grid = grid # for the reset() function
-        self.prev_var = np.var(grid)
-        self.threshold = self.prev_var*3/4
+        self.threshold_mean = 0.08
+        self.threshold_max = 0.1
 
         # We have 5 actions, corresponding to "right", "up", "left", "down", "hold"
         self.action_space = spaces.Discrete(5)
@@ -53,7 +53,8 @@ class GridWorldEnv(gym.Env):
 
     def _get_info(self):
         return {
-            "variance": np.var(self.grid),
+            "mean": np.mean(self.grid),
+            "max": np.max(self.grid),
             "step": self.step_counter}
 
 
@@ -77,14 +78,16 @@ class GridWorldEnv(gym.Env):
 # 1. change of directions : penalty = 5
 # 2. change of variances of the grid
 # 3. step taken
-    def reward(self, direction_change,curr_var):
-      coeff = 100
+    def reward(self, direction_change, sanded):
+      if np.mean(self.grid) <= self.threshold_mean and np.max(self.grid) <= self.threshold_max:
+        return 10000
       if np.any(self.grid < 0):
         return -10000
-      if direction_change:
-        return -50 + coeff * (self.prev_var-curr_var) - 10
+      
+      if sanded:
+        return  40
       else:
-        return coeff * (self.prev_var-curr_var) - 10
+        return -10
 
 
 # Step
@@ -114,22 +117,24 @@ class GridWorldEnv(gym.Env):
           self.direction = action
         self.step_counter += 1
 
-        curr_var = np.var(self.grid)
-        
+        sanded = False
+        if self.grid[self._agent_location[1], self._agent_location[0]] > self.threshold_max:
+           sanded = True
+           
         self.update_grid()
+        reward = self.reward(direction_change, sanded)
 
-        reward = self.reward(direction_change,curr_var)
-
-        self.prev_var = curr_var
-
+        curr_mean = np.mean(self.grid)
+        curr_max = np.max(self.grid)
+        
         # An episode is done iff the agent has reached the target
-        terminated = (curr_var <= self.threshold)
+        terminated = (curr_mean <= self.threshold_mean) and (curr_max <= self.threshold_max)
 
         truncated = False
         if np.any(self.grid < 0):
             truncated = True
             terminated = True
-
+        
         observation = self._get_obs()
         info = self._get_info()
 
@@ -144,6 +149,7 @@ class GridWorldEnv(gym.Env):
             return self._render_frame()
 
     def _render_frame(self):
+        
         if self.window is None and self.render_mode == "human":
             pygame.init()
             pygame.display.init()
