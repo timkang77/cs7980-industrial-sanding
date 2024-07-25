@@ -4,42 +4,33 @@ import pygame
 import gymnasium as gym
 from gymnasium import spaces
 
-def calculate_diff_variance(location,power,prev_mean,curr_mean, mean_space,frequency_space):
-   N = np.sum(frequency_space)
-   return (-2)*frequency_space[location[0],location[1]]* power* (mean_space[location[0],location[1]] + power/2)/N + (prev_mean**2 - curr_mean**2)
-
-def calculate_mean(mean_space,frequency_space):
-    N = np.sum(frequency_space)
-    return  np.sum(frequency_space * mean_space) / N
 
 class GridWorldEnv(gym.Env):
+    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
 
-    def __init__(self, grid,initial_var, lsize, wsize, power = 0.5):
-        self.lsize = lsize
-        self.wsize= wsize 
-        self.initial_var = initial_var
+    def __init__(self, grid, render_mode=None, sander_shape = "rectangular", range = 0, power = 0.06):
+        self.length, self.width = grid.shape
+        
+        self.window_size = 512
+
+        self.range = range
         self.power = power
-        self.initial_grid = grid
 
-        #self.observation_space = spaces.Box(0, size - 1, shape=(2,), dtype=int)
         self.observation_space = spaces.Dict({
-            "agent": spaces.Box(low=np.array([0, 0]), high=np.array([lsize - 1, wsize - 1]), dtype=int),
-            "mean_space": spaces.Box(low=-0.1, high=10, shape=(lsize, wsize), dtype=float),
-            "frequency_space" : spaces.Box(low=0, high=1000, shape=(lsize, wsize), dtype=int),
-            "min_value_space" : spaces.Box(low=-0.4, high=10, shape=(lsize, wsize), dtype=float)
-        
+            "agent": spaces.Box(low = 0, high = np.array([self.width - 1, self.length - 1]), shape=(2,), dtype=int),
+            "grid": spaces.Box(low=-100, high=100, shape=(self.length, self.width), dtype=float) 
             })
-        
-       
+        self.grid = grid
+        self.step_counter = 0
+        self.direction = None
+        self.initial_grid = grid # for the reset() function
+        self.threshold_mean = 0.08
+        self.threshold_max = 0.1
 
         # We have 5 actions, corresponding to "right", "up", "left", "down", "hold"
         self.action_space = spaces.Discrete(5)
 
-        """
-        The following dictionary maps abstract actions from `self.action_space` to
-        the direction we will walk in if that action is taken.
-        I.e. 0 corresponds to "right", 1 to "up" etc.
-        """
+        # action space
         self._action_to_direction = {
             0: np.array([1, 0]),
             1: np.array([0, 1]),
@@ -48,72 +39,66 @@ class GridWorldEnv(gym.Env):
             4: np.array([0, 0]),
         }
 
+        assert render_mode is None or render_mode in self.metadata["render_modes"]
+        self.render_mode = render_mode
+
+        self.window = None
+        self.clock = None
+
+
     def _get_obs(self):
-        return {"agent": self._agent_location, "mean_space": self.mean_space, "frequency_space" :self.frequency_space,"min_value_space": self.min_value_space }
+        return {"agent": self._agent_location, "grid": self.grid}
 
 
 
     def _get_info(self):
         return {
-            "variance": self.curr_var,
+            "mean": np.mean(self.grid),
+            "max": np.max(self.grid),
             "step": self.step_counter}
 
 
     def reset(self, seed=None, options=None):
 
         # Choose the agent's location as (0,0)
-        self._agent_location = np.array([0,0])
+        self._agent_location = np.array([0, 0])
         self.grid = self.initial_grid.copy()
-
-        # suppose each entry from the grid is of form (mean, frequency, min_value)
-        self.mean_space = np.zeros((self.lsize, self.wsize), dtype=float)
-        self.frequency_space = np.zeros((self.lsize, self.wsize), dtype=float)
-        self.min_value_space = np.zeros((self.lsize, self.wsize), dtype=float)
-
-        for i in range(self.lsize):
-            for j in range(self.wsize):
-                self.mean_space[i, j] = self.grid[i, j, 0]
-                self.frequency_space[i, j] = self.grid[i, j, 1]
-                self.min_value_space[i, j] = self.grid[i, j, 2]
-
-    
-
         self.step_counter = 0
         self.direction = None
-
-        self.prev_mean = calculate_mean(self.mean_space,self.frequency_space)
-        self.curr_mean = self.prev_mean
-
-        self.curr_var = self.initial_var
-        self.threshold = self.initial_var/2
-
         observation = self._get_obs()
         info = self._get_info()
 
+        if self.render_mode == "human":
+            self._render_frame()
 
         return observation, info
 
-
+# Reward
 # we compute reward based on:
 # 1. change of directions : penalty = 5
 # 2. change of variances of the grid
 # 3. step taken
-    def reward(self, direction_change,diff_var):
-        coeff = 10000
-        if np.any(self.min_value_space < 0):
-            return -1000
-        if direction_change:
-            return -5 + coeff *(-diff_var) - 1
+    def reward(self, direction_change, sanded):
+        if np.mean(self.grid) <= self.threshold_mean and np.max(self.grid) <= self.threshold_max:
+            return 10000
+        if np.any(self.grid < 0):
+            return -10000
+      
+        if sanded:
+            return  40
         else:
-            return coeff *(-diff_var) - 1
-
-
+            return -10
+        
+        
 # Step
-
     def update_grid(self):
-  
-        self.min_value_space[self._agent_location[0], self._agent_location[1]] -= self.power
-        self.mean_space[self._agent_location[0], self._agent_location[1]] -= self.power
+        # all squares within the range of the manhattan distance of the sander will be sanded
+        for i in range(-self.range, self.range+1):
+          for j in range(-self.range, self.range+1):
+            if abs(i) + abs(j) <= self.range and (self._agent_location[0] + j <= self.width -1)\
+              and (self._agent_location[0] + j >= 0) and (self._agent_location[1] + i <= self.length -1)\
+              and (self._agent_location[1] + i >= 0):
+              self.grid[self._agent_location[1] + j, self._agent_location[0] + i] -= self.power
 
         return
 
@@ -122,9 +107,9 @@ class GridWorldEnv(gym.Env):
         # Map the action (element of {0,1,2,3}) to the direction we walk in
         direction = self._action_to_direction[action]
         # We use `np.clip` to make sure we don't leave the grid
-        self._agent_location = np.clip(
-            self._agent_location + direction,  [0, 0], [self.lsize - 1, self.wsize - 1])
-        #print("movement:  ",direction)
+        new_location = self._agent_location + direction
+        self._agent_location[0] = np.clip(new_location[0], 0, self.width - 1)
+        self._agent_location[1] = np.clip(new_location[1], 0, self.length - 1)
         direction_change = False
         if action!= self.direction and self.step_counter != 0 and (action != 4 and self.direction != 4):
           direction_change = True
@@ -132,38 +117,108 @@ class GridWorldEnv(gym.Env):
           self.direction = action
         self.step_counter += 1
 
-        self.prev_mean = self.curr_mean
+        sanded = False
+        if self.grid[self._agent_location[1], self._agent_location[0]] > self.threshold_max:
+           sanded = True
+           
         self.update_grid()
-        self.curr_mean = calculate_mean(self.mean_space,self.frequency_space)
-        diff_var =  calculate_diff_variance(self._agent_location,self.power,self.prev_mean,self.curr_mean,self.mean_space,self.frequency_space)
+        reward = self.reward(direction_change, sanded)
+
+        curr_mean = np.mean(self.grid)
+        curr_max = np.max(self.grid)
         
-        self.curr_var += diff_var
-        reward = self.reward(direction_change,diff_var)
-
-    
-
         # An episode is done iff the agent has reached the target
-        truncated = False
-        terminated = False
-        print("diff_var=  ",diff_var )
-        print("curr var= ", self.curr_var)
-        print("threshold = ",self.threshold)
-        terminated = (self.curr_var <= self.threshold) 
-        print("ter???", terminated)
-        if np.any(self.min_value_space < 0):
-            truncated = True
-        print("trunc??,", truncated)
+        terminated = (curr_mean <= self.threshold_mean) and (curr_max <= self.threshold_max)
 
-    
+        truncated = False
+        if np.any(self.grid < 0):
+            truncated = True
+            terminated = True
+        
         observation = self._get_obs()
         info = self._get_info()
+
+        if self.render_mode == "human":
+            self._render_frame()
+
         return observation, reward, terminated, truncated, info
 
-
+# Rendering
     def render(self):
-        return None
+        if self.render_mode == "rgb_array":
+            return self._render_frame()
 
-    
+    def _render_frame(self):
+        
+        if self.window is None and self.render_mode == "human":
+            pygame.init()
+            pygame.display.init()
+            self.window = pygame.display.set_mode(
+                (self.window_size, self.window_size)
+            )
+        if self.clock is None and self.render_mode == "human":
+            self.clock = pygame.time.Clock()
 
+        canvas = pygame.Surface((self.window_size, self.window_size))
+        canvas.fill((255, 255, 255))
+        
+        pix_square_size = self.window_size / max(self.length, self.width)
+
+        offset_x = (self.window_size - pix_square_size * self.width) / 2
+        offset_y = (self.window_size - pix_square_size * self.length) / 2
+ 
+        # draw the agent
+        pygame.draw.circle(
+            canvas,
+            (0, 0, 255),
+            (offset_x + (self._agent_location[0] + 0.5) * pix_square_size, offset_y + (self._agent_location[1] + 0.5) * pix_square_size),
+            pix_square_size / 3,
+        )
+
+        # draw the grid values
+        font = pygame.font.SysFont(None, 24)
+        for i in range(self.length):
+            for j in range(self.width):
+                value = self.grid[i, j]
+                text = font.render(f'{value:.2f}', True, (0, 0, 0))
+                text_rect = text.get_rect(center=(offset_x + (j + 0.5) * pix_square_size, offset_y + (i + 0.5) * pix_square_size))
+                canvas.blit(text, text_rect)
+
+        # add some gridlines
+        for x in range(self.width + 1):
+            pygame.draw.line(
+                canvas,
+                0,
+                (offset_x + pix_square_size * x, offset_y),
+                (offset_x + pix_square_size * x, offset_y + pix_square_size * self.length),
+                width=3,
+            )
+
+        for y in range(self.length + 1):
+            pygame.draw.line(
+                canvas,
+                0,
+                (offset_x, offset_y + pix_square_size * y),
+                (offset_x + pix_square_size * self.width, offset_y + pix_square_size * y),
+                width=3,
+            )
+
+        if self.render_mode == "human":
+            # The following line copies our drawings from `canvas` to the visible window
+            self.window.blit(canvas, canvas.get_rect())
+            pygame.event.pump()
+            pygame.display.update()
+
+            # We need to ensure that human-rendering occurs at the predefined framerate.
+            # The following line will automatically add a delay to keep the framerate stable.
+            self.clock.tick(self.metadata["render_fps"])
+        else:  # rgb_array
+            return np.transpose(
+                np.array(pygame.surfarray.pixels3d(canvas)), axes=(1, 0, 2)
+            )
+
+# Close
     def close(self):
-        return None
+        if self.window is not None:
+            pygame.display.quit()
+            pygame.quit()

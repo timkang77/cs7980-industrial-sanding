@@ -19,9 +19,6 @@ def env_creator(env_config):
 
 def main():
     run_dqn(env_creator)
-    env = env_creator(env_config=None)
-   
-if __name__ == "__main__":
     main()
         
     #register_env("GridWorldEnv", env_creator)
