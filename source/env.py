@@ -4,11 +4,13 @@ import pygame
 import gymnasium as gym
 from gymnasium import spaces
 
+#test_grid = np.load('matrix_5x10.npy')
+
 
 class GridWorldEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
 
-    def __init__(self, grid, render_mode=None, sander_shape = "rectangular", range = 0, power = 0.06):
+    def __init__(self, grid, render_mode=None, sander_shape = "rectangular", range = 0, power = 0.05):
         self.length, self.width = grid.shape
         
         self.window_size = 512
@@ -17,17 +19,23 @@ class GridWorldEnv(gym.Env):
         self.power = power
 
         self.observation_space = spaces.Dict({
-            "agent": spaces.Box(low = 0, high = np.array([self.width - 1, self.length - 1]), shape=(2,), dtype=int),
-            "grid": spaces.Box(low=-100, high=100, shape=(self.length, self.width), dtype=float) 
+            "agent": spaces.MultiBinary(self.length * self.width),
+            "grid": spaces.Box(low = -1, high = 100, shape=(self.length*self.width, ), dtype=float),
             })
+        #self.observation_space = spaces.Dict({
+        #    "agent": spaces.Box(low = 0, high = np.array([self.width - 1, self.length - 1]), shape=(2,), dtype=int),
+        #    "grid": spaces.Box(low = -1, high = 100, shape=(self.length*self.width, ), dtype=float),
+        #    })
+        
         self.grid = grid
         self.step_counter = 0
         self.direction = None
         self.initial_grid = grid # for the reset() function
-        self.threshold_mean = 0.08
-        self.threshold_max = 0.1
+        self.threshold_mean = 0.0505
+        self.threshold_max = 0.11
+        self.maxspot = np.max(self.grid)
 
-        # We have 5 actions, corresponding to "right", "up", "left", "down", "hold"
+        # We have 5 actions, corresponding to "right", "down", "left", "up", "hold"
         self.action_space = spaces.Discrete(5)
 
         # action space
@@ -47,7 +55,10 @@ class GridWorldEnv(gym.Env):
 
 
     def _get_obs(self):
-        return {"agent": self._agent_location, "grid": self.grid}
+        #return {"agent": self._agent_location, "grid": self.grid.flatten()}
+        agent_one_hot = np.zeros(self.length * self.width, dtype=int)
+        agent_one_hot[self._agent_location[1] * self.width + self._agent_location[0]] = 1
+        return {"agent": agent_one_hot, "grid": self.grid.flatten()}
 
 
 
@@ -63,10 +74,13 @@ class GridWorldEnv(gym.Env):
         # Choose the agent's location as (0,0)
         self._agent_location = np.array([0, 0])
         self.grid = self.initial_grid.copy()
+        self.grid[0, 0] -= self.power
         self.step_counter = 0
         self.direction = None
         observation = self._get_obs()
         info = self._get_info()
+
+        self.maxspot = np.max(self.grid)
 
         if self.render_mode == "human":
             self._render_frame()
@@ -79,15 +93,20 @@ class GridWorldEnv(gym.Env):
 # 2. change of variances of the grid
 # 3. step taken
     def reward(self, direction_change, sanded):
-      if np.mean(self.grid) <= self.threshold_mean and np.max(self.grid) <= self.threshold_max:
-        return 10000
-      if np.any(self.grid < 0):
-        return -10000
       
-      if sanded:
-        return  40
+      coeff = 10
+
+      if np.any(self.grid < 0):
+        return -5
+      #if np.mean(self.grid) < self.threshold_mean:
+      #  return 10000
+
+      diff_mean = self.grid[self._agent_location[1], self._agent_location[0]] 
+
+      if direction_change:
+        return -0.05 + diff_mean*coeff
       else:
-        return -10
+        return -0.02 + diff_mean*coeff
 
 
 # Step
@@ -111,7 +130,7 @@ class GridWorldEnv(gym.Env):
         self._agent_location[0] = np.clip(new_location[0], 0, self.width - 1)
         self._agent_location[1] = np.clip(new_location[1], 0, self.length - 1)
         direction_change = False
-        if action!= self.direction and self.step_counter != 0 and (action != 4 and self.direction != 4):
+        if action!= self.direction and self.direction != None and (action != 4 and self.direction != 4):
           direction_change = True
         if action != 4:
           self.direction = action
@@ -122,17 +141,17 @@ class GridWorldEnv(gym.Env):
            sanded = True
            
         self.update_grid()
+
         reward = self.reward(direction_change, sanded)
 
         curr_mean = np.mean(self.grid)
         curr_max = np.max(self.grid)
         
         # An episode is done iff the agent has reached the target
-        terminated = (curr_mean <= self.threshold_mean) and (curr_max <= self.threshold_max)
+        terminated = (curr_max < self.threshold_max) 
 
         truncated = False
         if np.any(self.grid < 0):
-            truncated = True
             terminated = True
         
         observation = self._get_obs()
@@ -222,3 +241,47 @@ class GridWorldEnv(gym.Env):
         if self.window is not None:
             pygame.display.quit()
             pygame.quit()
+
+
+'''
+def generate_traversal_sequence(matrix_shape):
+    rows, cols = matrix_shape
+    actions = []
+    current_direction = 0  # Start moving "right"
+    for row in range(rows):
+        if row % 2 == 0:  # If the row number is even, move "right"
+            for col in range(cols - 1):
+                actions.append(0)  # Move "right"
+            if row != rows - 1:
+                actions.append(1)  # Move "down" at the end of the row
+        else:  # If the row number is odd, move "left"
+            for col in range(cols - 1):
+                actions.append(2)  # Move "left"
+            if row != rows - 1:
+                actions.append(1)  # Move "down" at the end of the row
+    return actions
+
+matrix_shape = (5, 10)
+actions = generate_traversal_sequence(matrix_shape)
+
+from gymnasium.envs.registration import register
+
+register(
+    id='GridWorldTest',
+    entry_point='__main__:GridWorldEnv',
+)
+
+env = gym.make('GridWorldTest', render_mode = "human")
+
+env.reset()
+
+t_reward = 0
+
+for action in actions:
+    obs, reward, done, truncated, info  = env.step(action)
+    env.render()
+    print(info)
+    t_reward += reward
+print("Total reward:", t_reward)
+env.close()
+'''
