@@ -50,6 +50,8 @@ class GridWorldEnv(gym.Env):
         assert render_mode is None or render_mode in self.metadata["render_modes"]
         self.render_mode = render_mode
 
+        self.path = []
+
         self.window = None
         self.clock = None
 
@@ -80,6 +82,8 @@ class GridWorldEnv(gym.Env):
         observation = self._get_obs()
         info = self._get_info()
 
+        self.path = [self._agent_location.copy()]
+
         self.maxspot = np.max(self.grid)
 
         if self.render_mode == "human":
@@ -103,10 +107,16 @@ class GridWorldEnv(gym.Env):
 
       diff_mean = self.grid[self._agent_location[1], self._agent_location[0]] 
 
+      step_reward = -0.02
+
+      step_reward += diff_mean*coeff
+
       if direction_change:
-        return -0.05 + diff_mean*coeff
-      else:
-        return -0.02 + diff_mean*coeff
+        step_reward -= 0.03
+      if np.max(self.grid) < self.threshold_max:
+        step_reward += 5
+
+      return step_reward
 
 
 # Step
@@ -157,6 +167,8 @@ class GridWorldEnv(gym.Env):
         observation = self._get_obs()
         info = self._get_info()
 
+        self.path.append(self._agent_location.copy())
+
         if self.render_mode == "human":
             self._render_frame()
 
@@ -185,6 +197,8 @@ class GridWorldEnv(gym.Env):
 
         offset_x = (self.window_size - pix_square_size * self.width) / 2
         offset_y = (self.window_size - pix_square_size * self.length) / 2
+
+
  
         # draw the agent
         pygame.draw.circle(
@@ -193,6 +207,14 @@ class GridWorldEnv(gym.Env):
             (offset_x + (self._agent_location[0] + 0.5) * pix_square_size, offset_y + (self._agent_location[1] + 0.5) * pix_square_size),
             pix_square_size / 3,
         )
+
+        if len(self.path) > 1:
+            for i in range(len(self.path) - 1):
+                start_pos = (offset_x + (self.path[i][0] + 0.5) * pix_square_size,
+                             offset_y + (self.path[i][1] + 0.5) * pix_square_size)
+                end_pos = (offset_x + (self.path[i + 1][0] + 0.5) * pix_square_size,
+                           offset_y + (self.path[i + 1][1] + 0.5) * pix_square_size)
+                pygame.draw.line(canvas, (255, 0, 0), start_pos, end_pos, width=2)
 
         # draw the grid values
         font = pygame.font.SysFont(None, 24)
