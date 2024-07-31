@@ -1,3 +1,4 @@
+import os
 from robodk import *      # RoboDK API
 from robolink import *    # Robot toolbox
 import time
@@ -7,6 +8,20 @@ from tkinter import simpledialog, messagebox
 # Initialize Tkinter root
 root = tk.Tk()
 root.withdraw()  # Hide the root window
+
+# Get the current working directory (where the RoboDK file should be)
+current_directory = os.getcwd()
+log_file = os.path.join(current_directory, "robot_log.txt")
+
+# Function to log messages
+def log(message):
+    with open(log_file, "a") as f:
+        f.write(message + "\n")
+    print(message)
+
+# Initialize the log file (this will overwrite the old file)
+with open(log_file, "w") as f:
+    f.write("Robot log started\n")
 
 # Ask user for the starting sanding point
 start_point = simpledialog.askinteger("Input", "Enter the starting sanding point (1-50):")
@@ -38,29 +53,30 @@ except ValueError:
 RL = Robolink()
 
 # Notify user:
-print('To edit this program:\nright click on the Python program, then, select "Edit Python script"')
+log('To edit this program:\nright click on the Python program, then, select "Edit Python script"')
 
 # List all items in the station
 all_items = RL.ItemList()
-print("Available items in the station:")
+log("Available items in the station:")
 for item in all_items:
-    print(item.Name())
+    log(item.Name())
 
 # Verify and get the robot item
 robot = RL.Item('UR30')
 if not robot.Valid():
     raise Exception("Robot 'UR30' not found")
 else:
-    print("Robot 'UR30' found")
+    log("Robot 'UR30' found")
 
 # Verify and get the 'Home' item
 home = RL.Item('Home')
 if not home.Valid():
     raise Exception("Target 'Home' not found")
 else:
-    print("Target 'Home' found")
+    log("Target 'Home' found")
 
 # Move robot to home
+log("Moving to 'Home'")
 robot.MoveL(home)
 
 # Define the grid layout
@@ -94,7 +110,7 @@ initial_target = RL.Item(initial_target_name)
 if not initial_target.Valid():
     raise Exception(f"Initial target '{initial_target_name}' not found")
 else:
-    print(f"Moving to initial target '{initial_target_name}'")
+    log(f"Moving to initial target '{initial_target_name}'")
     robot.MoveL(initial_target)
     time.sleep(1)
 
@@ -104,31 +120,41 @@ def move_to_next_point(x, y, direction):
         return x, y - 1
     elif direction == 2:  # down
         return x, y + 1
-    elif direction == 3:  # left
-        return x - 1, y
-    elif direction == 4:  # right
+    elif direction == 3:  # right
         return x + 1, y
-    else:  # stay
+    elif direction == 4:  # left
+        return x - 1, y
+    elif direction == 0:  # stay
         return x, y
 
 # Follow the path based on user movements
 current_x, current_y = initial_x, initial_y
 for move in movements:
     next_x, next_y = move_to_next_point(current_x, current_y, move)
-    if 0 <= next_x < len(grid[0]) and 0 <= next_y < len(grid):
-        next_point_index = grid[next_y][next_x]
-        next_target_name = f'SandingPoint {next_point_index}'
-        next_target = RL.Item(next_target_name)
-        if not next_target.Valid():
-            raise Exception(f"Next target '{next_target_name}' not found")
+    if move != 0:  # Skip movement if direction is 0 (stay)
+        if 0 <= next_x < len(grid[0]) and 0 <= next_y < len(grid):
+            next_point_index = grid[next_y][next_x]
+            next_target_name = f'SandingPoint {next_point_index}'
+            next_target = RL.Item(next_target_name)
+            if not next_target.Valid():
+                log(f"Next target '{next_target_name}' not found. Skipping this movement.")
+                continue
+            else:
+                target_position = next_target.Pose().Pos()
+                log(f"Moving to '{next_target_name}' at grid coordinates ({next_x}, {next_y}) with position {target_position}")
+                try:
+                    robot.MoveL(next_target)
+                    time.sleep(1)  # stay at the sanding point for 1 second
+                except Exception as e:
+                    log(f"Error moving to target '{next_target_name}': {e}")
+                    continue
+            current_x, current_y = next_x, next_y
         else:
-            print(f"Moving to '{next_target_name}'")
-            robot.MoveL(next_target)
-            time.sleep(2)  # stay at the sanding point for 2 seconds
-        current_x, current_y = next_x, next_y
+            log(f"Invalid move '{move}' from ({current_x}, {current_y}). Skipping this movement.")
     else:
-        print(f"Invalid move '{move}' from ({current_x}, {current_y})")
+        log(f"Staying at '{current_x}, {current_y}' for 1 second")
+        time.sleep(1)  # stay at the current position for 1 second
 
 # Move robot back to home after completing the path
-print("Returning to 'Home'")
+log("Returning to 'Home'")
 robot.MoveL(home)
